@@ -14,10 +14,30 @@ connection details come from `etl/.env` (never committed) -- see setup below.
 ## Setup
 
 ```bash
-pip install -r etl/requirements.txt
 cp etl/.env.example etl/.env
 # then edit etl/.env with your local Postgres credentials
 ```
+
+**Use a virtualenv, and on Windows use the `py` launcher, not bare
+`python`/`pip`.** In a plain Git Bash shell on Windows, `python`/`pip` often
+resolve to the Microsoft Store's app-execution-alias stub ("Python was not
+found...") rather than a real interpreter, even when Python is genuinely
+installed — the `py` launcher bypasses that:
+
+```bash
+py -3 -m venv etl/.venv
+etl/.venv/Scripts/python.exe -m pip install -r etl/requirements.txt
+```
+
+(On macOS/Linux, or a Windows shell where bare `python3`/`pip3` already work
+correctly, the conventional `python3 -m venv etl/.venv && etl/.venv/bin/pip
+install -r etl/requirements.txt` is equivalent — the venv is what matters,
+not which launcher gets you there.)
+
+Every command below assumes `etl/.venv`'s own interpreter — replace
+`python` with `etl/.venv/Scripts/python.exe` (Windows) or
+`etl/.venv/bin/python` (macOS/Linux) if it's not the active interpreter on
+your `PATH`.
 
 `etl/.env` must define `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 The Postgres database and the `faers`/`ct` schemas/tables are expected to
