@@ -58,7 +58,11 @@ npm run eval:gate    # runs scripts/eval-gate.ts -- hard-fails if any
   `queryTier4()` in `src/lib/db/client.ts`, authenticated as
   `app_runtime` vs. `app_runtime_tier4` respectively) — verified live
   that `app_runtime` is actually denied on raw `faers.*`/`ct.*`, not
-  just conventionally kept off them.
+  just conventionally kept off them. Conversation history is now
+  loaded/persisted per `sessionId` via `src/lib/session/store.ts`
+  (in-memory, deliberately outside the DB's SELECT-only role model —
+  see that file's doc comment for the documented limitation on
+  multi-instance deployments).
 - `src/app/chat/`, `src/app/cohort/` — real UIs (free-text chat;
   structured Clinical Cohort Builder form with CSV export). The
   Cohort Builder surfaces an explicit caveat that FAERS "seriousness"
@@ -81,10 +85,6 @@ npm run eval:gate    # runs scripts/eval-gate.ts -- hard-fails if any
   left as a follow-up rather than fabricated.
 - Streaming: `route.ts` returns a single JSON response, not a token
   stream.
-- Conversation history: `route.ts` always calls `generateTier3Sql` with
-  an empty history array — nothing persists/loads history by
-  `sessionId` yet, so multi-turn follow-ups aren't grounded even though
-  `tier3.ts`'s signature already accepts history.
 - Verified-query cache (`verifiedQueries.ts`) is exact-match only, no
   fuzzy/embedding similarity yet.
 
