@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+faers/_raw/
+clinicaltrials/_raw/
+.venv/
