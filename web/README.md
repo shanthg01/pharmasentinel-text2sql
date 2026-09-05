@@ -53,7 +53,12 @@ npm run eval:gate    # runs scripts/eval-gate.ts -- hard-fails if any
   call grounded only on the surfaced candidates, same validate/retry
   pattern.
 - `src/app/api/chat/route.ts` — the full orchestration seam (guardrails
-  → Tier 3 → Tier 4 → DB execution).
+  → Tier 3 → Tier 4 → DB execution). Tier 3/Tier 4 results execute
+  through genuinely separate `pg.Pool` connections (`query()` vs.
+  `queryTier4()` in `src/lib/db/client.ts`, authenticated as
+  `app_runtime` vs. `app_runtime_tier4` respectively) — verified live
+  that `app_runtime` is actually denied on raw `faers.*`/`ct.*`, not
+  just conventionally kept off them.
 - `src/app/chat/`, `src/app/cohort/` — real UIs (free-text chat;
   structured Clinical Cohort Builder form with CSV export). The
   Cohort Builder surfaces an explicit caveat that FAERS "seriousness"
@@ -69,10 +74,6 @@ npm run eval:gate    # runs scripts/eval-gate.ts -- hard-fails if any
 
 **Remaining gaps (documented, not silently missing):**
 
-- `tier4Pool` in `src/lib/db/client.ts` is still an alias to the same
-  pool as the `app_runtime` connection — `db/ddl/005_roles.sql` already
-  creates the narrower `app_runtime_tier4` role, but the app doesn't yet
-  authenticate a second `pg.Pool` against it. See the TODO in that file.
 - Gold-case suite covers 18 of a planned 30+ cases. `tier3_quantitative`,
   `tier3_cohort`, `tier3_multiturn`, and `unanswerable` need real
   reference numbers from a larger FAERS/ClinicalTrials.gov load than the
