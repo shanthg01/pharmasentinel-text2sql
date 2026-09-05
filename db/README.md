@@ -27,7 +27,12 @@ their access boundary via schema separation and role grants
 ## Prerequisites
 
 - Docker Desktop (or compatible engine) with the Compose plugin
-- `psql` client available locally (or run it via `docker compose exec`)
+- A `psql` client. **Most setups won't have one installed locally** — this
+  is genuinely fine; every command below has a `docker exec` form that runs
+  `psql` *inside* the container instead, which needs nothing installed on
+  the host beyond Docker itself. Use whichever you have; the `docker exec`
+  form is what was actually verified end-to-end for this project (a bare
+  cold start on a machine with no local `psql`).
 
 ## 1. Start Postgres
 
@@ -42,13 +47,39 @@ docker compose -f db/docker-compose.yml ps
 ```
 
 This starts a single `postgres:16` container named `pharmasentinel-postgres`,
-publishing port 5432 and persisting data in the named volume
-`pharmasentinel-pgdata`.
+persisting data in the named volume `pharmasentinel-pgdata`. It publishes on
+host port **5439** by default (`POSTGRES_HOST_PORT` in `db/.env`), not the
+Postgres-standard 5432 — deliberately, so it doesn't fail to bind on a
+machine that already has some other Postgres container using 5432 (a real
+collision hit while building this project). Override
+`POSTGRES_HOST_PORT` if 5439 is ever taken too.
 
 ## 2. Apply DDL, in order
 
 The DDL files are numbered and must be applied in order — later files
-depend on schemas/tables/roles created by earlier ones.
+depend on schemas/tables/roles created by earlier ones. **All six**,
+through `006` — an earlier version of this doc stopped at `005` and missed
+`006_field_search.sql` (the `pg_trgm` extension + index Tier 4's fallback
+search needs), which silently left Tier 4 broken for anyone who followed
+this doc literally.
+
+Using the container's own `psql` (no local client needed):
+
+```bash
+for f in db/ddl/000_schemas.sql \
+         db/ddl/001_raw_faers.sql \
+         db/ddl/002_raw_clinicaltrials.sql \
+         db/ddl/003_ontology.sql \
+         db/ddl/004_semantic_views.sql \
+         db/ddl/005_roles.sql \
+         db/ddl/006_field_search.sql; do
+  echo "applying $f"
+  cat "$f" | docker exec -i pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -v ON_ERROR_STOP=1
+done
+```
+
+Or, with a local `psql` client (adjust `PGPORT` if you overrode
+`POSTGRES_HOST_PORT` above):
 
 ```bash
 export PGHOST=localhost
@@ -57,25 +88,39 @@ export PGUSER=pharmasentinel      # matches POSTGRES_USER in db/.env
 export PGDATABASE=pharmasentinel  # matches POSTGRES_DB in db/.env
 export PGPASSWORD=changeme        # matches POSTGRES_PASSWORD in db/.env
 
-for f in db/ddl/000_schemas.sql \
-         db/ddl/001_raw_faers.sql \
-         db/ddl/002_raw_clinicaltrials.sql \
-         db/ddl/003_ontology.sql \
-         db/ddl/004_semantic_views.sql \
-         db/ddl/005_roles.sql; do
+for f in db/ddl/000_schemas.sql db/ddl/001_raw_faers.sql db/ddl/002_raw_clinicaltrials.sql \
+         db/ddl/003_ontology.sql db/ddl/004_semantic_views.sql db/ddl/005_roles.sql \
+         db/ddl/006_field_search.sql; do
   echo "applying $f"
   psql -v ON_ERROR_STOP=1 -f "$f"
 done
 ```
 
-(On Windows/PowerShell, run each `psql -v ON_ERROR_STOP=1 -f db\ddl\NNN_*.sql`
-individually, or adapt the loop to PowerShell's `foreach`.)
+(On Windows/PowerShell with a local client, run each
+`psql -v ON_ERROR_STOP=1 -f db\ddl\NNN_*.sql` individually, or adapt the
+loop to PowerShell's `foreach`.)
 
 ## 3. Load seed data
 
 The seed CSVs populate the `ont` lookup tables that the semantic views
-(Tier 2) join against. Load them with `\copy` (client-side, so it works
-against a container without needing to mount the CSV into it):
+(Tier 2) join against.
+
+Using the container's own `psql` — `\copy` reads the file from wherever the
+`psql` process runs, so pipe the CSV in over stdin rather than referencing
+a host path the container can't see:
+
+```bash
+docker exec -i pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -v ON_ERROR_STOP=1 \
+  -c "\copy ont.drug_class(ingredient, drug_class) FROM STDIN WITH (FORMAT csv, HEADER true)" \
+  < db/seed/drug_class.csv
+
+docker exec -i pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -v ON_ERROR_STOP=1 \
+  -c "\copy ont.meddra_pt(pt_term, body_system, is_serious_category) FROM STDIN WITH (FORMAT csv, HEADER true)" \
+  < db/seed/meddra_pt_curated.csv
+```
+
+Or, with a local `psql` client (same env vars as step 2, `\copy` here reads
+the file straight off your own filesystem):
 
 ```bash
 psql -v ON_ERROR_STOP=1 <<'SQL'
@@ -92,10 +137,13 @@ rows inserted directly by `003_ontology.sql`.
 ## 4. Verify
 
 ```bash
-psql -c "SELECT * FROM sem.faers_case_summary LIMIT 5;"
-psql -c "SELECT * FROM sem.trials_summary LIMIT 5;"
-psql -c "SELECT rolname FROM pg_roles WHERE rolname LIKE 'app_runtime%';"
+docker exec pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -c "SELECT * FROM sem.faers_case_summary LIMIT 5;"
+docker exec pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -c "SELECT * FROM sem.trials_summary LIMIT 5;"
+docker exec pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -c "SELECT rolname FROM pg_roles WHERE rolname LIKE 'app_runtime%';"
+docker exec pharmasentinel-postgres psql -U pharmasentinel -d pharmasentinel -c "\dx" # confirm pg_trgm is listed (006)
 ```
+
+(swap in a bare `psql ...` with the step-2 env vars if using a local client)
 
 (Both `sem.*` views will legitimately return zero rows until the ETL track
 loads raw `faers.*`/`ct.*` data — the views themselves are ready to query as
