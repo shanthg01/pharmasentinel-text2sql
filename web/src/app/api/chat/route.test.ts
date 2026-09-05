@@ -5,6 +5,8 @@ const generateTier3SqlMock = vi.fn();
 const tier4FallbackMock = vi.fn();
 const queryMock = vi.fn();
 const queryTier4Mock = vi.fn();
+const getHistoryMock = vi.fn();
+const appendTurnMock = vi.fn();
 
 vi.mock("@/lib/guardrails", () => ({
   runGuardrails: runGuardrailsMock,
@@ -18,6 +20,10 @@ vi.mock("@/lib/text2sql/tier4", () => ({
 vi.mock("@/lib/db/client", () => ({
   query: queryMock,
   queryTier4: queryTier4Mock,
+}));
+vi.mock("@/lib/session/store", () => ({
+  getHistory: getHistoryMock,
+  appendTurn: appendTurnMock,
 }));
 
 const { POST } = await import("./route");
@@ -36,6 +42,9 @@ describe("POST /api/chat", () => {
     tier4FallbackMock.mockReset();
     queryMock.mockReset();
     queryTier4Mock.mockReset();
+    getHistoryMock.mockReset();
+    appendTurnMock.mockReset();
+    getHistoryMock.mockReturnValue([]);
   });
 
   it("returns 400 for a missing question, without touching guardrails/db", async () => {
@@ -115,5 +124,98 @@ describe("POST /api/chat", () => {
     expect(json.kind).toBe("tier4");
     expect(queryTier4Mock).toHaveBeenCalledWith("SELECT * FROM faers.report LIMIT 10");
     expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("loads session history and passes it through to generateTier3Sql on a follow-up request", async () => {
+    const priorHistory = [
+      { role: "user" as const, text: "How many cases for imatinib in 2022?" },
+      { role: "assistant" as const, text: "Generated tier3 SQL: SELECT ... LIMIT 10" },
+    ];
+    getHistoryMock.mockReturnValue(priorHistory);
+    runGuardrailsMock.mockResolvedValue({ verdict: "allow" });
+    generateTier3SqlMock.mockResolvedValue({
+      kind: "sql",
+      sql: "SELECT * FROM sem.faers_case_summary LIMIT 10",
+    });
+    queryMock.mockResolvedValue([]);
+
+    await POST(makeRequest({ question: "What about last year?", sessionId: "s1" }));
+
+    expect(getHistoryMock).toHaveBeenCalledWith("s1");
+    expect(generateTier3SqlMock).toHaveBeenCalledWith(
+      "What about last year?",
+      priorHistory,
+    );
+  });
+
+  it("does not load history for a request with a missing/blank sessionId, and never appends a turn", async () => {
+    runGuardrailsMock.mockResolvedValue({ verdict: "allow" });
+    generateTier3SqlMock.mockResolvedValue({
+      kind: "sql",
+      sql: "SELECT * FROM sem.faers_case_summary LIMIT 10",
+    });
+    queryMock.mockResolvedValue([]);
+
+    await POST(makeRequest({ question: "How many cases for imatinib?", sessionId: "  " }));
+
+    expect(getHistoryMock).not.toHaveBeenCalled();
+    expect(generateTier3SqlMock).toHaveBeenCalledWith(
+      "How many cases for imatinib?",
+      [],
+    );
+    expect(appendTurnMock).not.toHaveBeenCalled();
+  });
+
+  it("appends a user turn and an assistant turn summarizing the SQL after a successful tier3 call", async () => {
+    runGuardrailsMock.mockResolvedValue({ verdict: "allow" });
+    generateTier3SqlMock.mockResolvedValue({
+      kind: "sql",
+      sql: "SELECT * FROM sem.faers_case_summary LIMIT 10",
+    });
+    queryMock.mockResolvedValue([]);
+
+    await POST(makeRequest({ question: "How many cases for imatinib?", sessionId: "s1" }));
+
+    expect(appendTurnMock).toHaveBeenCalledTimes(2);
+    expect(appendTurnMock).toHaveBeenNthCalledWith(1, "s1", {
+      role: "user",
+      text: "How many cases for imatinib?",
+    });
+    expect(appendTurnMock).toHaveBeenNthCalledWith(2, "s1", {
+      role: "assistant",
+      text: expect.stringContaining("SELECT * FROM sem.faers_case_summary LIMIT 10"),
+    });
+  });
+
+  it("still appends a turn on a tier3 clarify response (so context accumulates across a clarify)", async () => {
+    runGuardrailsMock.mockResolvedValue({ verdict: "allow" });
+    generateTier3SqlMock.mockResolvedValue({
+      kind: "clarify",
+      question: "Which drug did you mean?",
+    });
+
+    await POST(makeRequest({ question: "How many cases?", sessionId: "s1" }));
+
+    expect(appendTurnMock).toHaveBeenCalledTimes(2);
+    expect(appendTurnMock).toHaveBeenNthCalledWith(1, "s1", {
+      role: "user",
+      text: "How many cases?",
+    });
+    expect(appendTurnMock).toHaveBeenNthCalledWith(2, "s1", {
+      role: "assistant",
+      text: expect.stringContaining("Which drug did you mean?"),
+    });
+  });
+
+  it("does not append any turn on a guardrail reject", async () => {
+    runGuardrailsMock.mockResolvedValue({
+      verdict: "reject",
+      category: "off_topic",
+      message: "I can only answer questions about drug safety data.",
+    });
+
+    await POST(makeRequest({ question: "What's the weather today?", sessionId: "s1" }));
+
+    expect(appendTurnMock).not.toHaveBeenCalled();
   });
 });
