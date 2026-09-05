@@ -1,0 +1,86 @@
+:root {
+  --ps-bg: #0b1220;
+  --ps-fg: #e6e9ef;
+  --ps-muted: #9aa4b2;
+  --ps-accent: #4f8cff;
+  --ps-border: #263042;
+  --ps-panel: #121a2b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: var(--ps-bg);
+  color: var(--ps-fg);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+.app-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+.app-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+.app-subtitle {
+  margin: 0 0 1.5rem;
+  color: var(--ps-muted);
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--ps-border);
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.tab-button {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--ps-muted);
+  padding: 0.6rem 0.9rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab-button:hover {
+  color: var(--ps-fg);
+}
+
+.tab-button--active {
+  color: var(--ps-fg);
+  border-bottom-color: var(--ps-accent);
+}
+
+.tab-panel {
+  background: var(--ps-panel);
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.tab-panel h2 {
+  margin-top: 0;
+}
+
+.tab-panel p {
+  color: var(--ps-muted);
+  line-height: 1.5;
+}
