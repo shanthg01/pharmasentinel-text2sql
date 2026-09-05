@@ -1,0 +1,61 @@
+pt_term,body_system,is_serious_category
+Cardiac failure,Cardiac,true
+Myocardial infarction,Cardiac,true
+Atrial fibrillation,Cardiac,false
+Cardiac arrest,Cardiac,true
+Cardiomyopathy,Cardiac,true
+QT prolongation,Cardiac,true
+Pericardial effusion,Cardiac,false
+Tachycardia,Cardiac,false
+Hepatic failure,Hepatic,true
+Hepatotoxicity,Hepatic,true
+Hepatitis,Hepatic,true
+Jaundice,Hepatic,false
+Hyperbilirubinaemia,Hepatic,false
+Drug-induced liver injury,Hepatic,true
+Cholestasis,Hepatic,false
+Hepatic cirrhosis,Hepatic,true
+Renal failure acute,Renal,true
+Renal impairment,Renal,false
+Nephrotoxicity,Renal,true
+Proteinuria,Renal,false
+Haematuria,Renal,false
+Renal failure chronic,Renal,true
+Tubulointerstitial nephritis,Renal,false
+Neutropenia,Haematological,true
+Febrile neutropenia,Haematological,true
+Thrombocytopenia,Haematological,true
+Anaemia,Haematological,false
+Leukopenia,Haematological,false
+Pancytopenia,Haematological,true
+Disseminated intravascular coagulation,Haematological,true
+Agranulocytosis,Haematological,true
+Interstitial lung disease,Respiratory,true
+Pulmonary embolism,Respiratory,true
+Dyspnoea,Respiratory,false
+Pneumonitis,Respiratory,true
+Respiratory failure,Respiratory,true
+Pulmonary fibrosis,Respiratory,true
+Pleural effusion,Respiratory,false
+Diarrhoea,Gastrointestinal,false
+Nausea,Gastrointestinal,false
+Vomiting,Gastrointestinal,false
+Gastrointestinal haemorrhage,Gastrointestinal,true
+Colitis,Gastrointestinal,true
+Pancreatitis acute,Gastrointestinal,true
+Intestinal perforation,Gastrointestinal,true
+Rash,Dermatological,false
+Stevens-Johnson syndrome,Dermatological,true
+Toxic epidermal necrolysis,Dermatological,true
+Pruritus,Dermatological,false
+Alopecia,Dermatological,false
+Palmar-plantar erythrodysaesthesia syndrome,Dermatological,false
+Erythema multiforme,Dermatological,false
+Headache,Neurological,false
+Peripheral neuropathy,Neurological,false
+Seizure,Neurological,true
+Cerebrovascular accident,Neurological,true
+Encephalopathy,Neurological,true
+Dizziness,Neurological,false
+Posterior reversible encephalopathy syndrome,Neurological,true
+Tremor,Neurological,false

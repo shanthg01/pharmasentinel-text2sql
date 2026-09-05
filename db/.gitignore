@@ -1,0 +1,3 @@
+# Real local Postgres credentials -- copy db/.env.example instead. Never
+# commit a real password even for local-only dev use.
+.env

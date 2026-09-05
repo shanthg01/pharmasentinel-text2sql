@@ -1,0 +1,19 @@
+# Root-level cross-cutting ignores. Each of db/, etl/, web/ also carries its
+# own .gitignore for concerns specific to that subproject (Postgres creds,
+# the Python venv/downloaded bulk data, node_modules/.next) -- this file is
+# just for things that could show up anywhere.
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Any stray env file at the repo root (subprojects keep their own .env
+# out via their own .gitignore already; this is a catch-all in case one
+# ever gets created here instead).
+.env
+.env.local
