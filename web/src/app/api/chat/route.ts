@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { runGuardrails } from "@/lib/guardrails";
 import { generateTier3Sql } from "@/lib/text2sql/tier3";
 import { tier4Fallback } from "@/lib/text2sql/tier4";
-import { query } from "@/lib/db/client";
+import { query, queryTier4 } from "@/lib/db/client";
 
 export interface ChatRequestBody {
   question: string;
@@ -74,6 +74,9 @@ export async function POST(request: Request): Promise<Response> {
     kind = "tier4";
   }
 
-  const rows = await query(sql);
+  // Tier 4 SQL targets raw faers.*/ct.* tables, which the Tier 1-3
+  // app_runtime role (used by query()) has no grant to read -- it must
+  // execute through queryTier4()'s app_runtime_tier4 connection instead.
+  const rows = kind === "tier4" ? await queryTier4(sql) : await query(sql);
   return NextResponse.json({ kind, sql, rows });
 }
