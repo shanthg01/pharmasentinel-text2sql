@@ -3,21 +3,22 @@
 Next.js (App Router) + TypeScript front end and API layer for the
 PharmaSentinel governed text-to-SQL platform.
 
-**Status: skeleton pass.** This scaffolds the architecture — types,
-interfaces, module seams, tests for the parts that are genuinely
-implemented — so the next passes have a structure to build into. It is
-**not** a finished feature. See "What's actually wired vs. stubbed" below
-before assuming any given tab or tier does something real.
+**Status: all 4 tiers real, verified against a live Postgres with real
+FAERS/ClinicalTrials.gov data loaded** — not stubs, not mocked-only. See
+"What's actually wired vs. remaining gaps" below for the honest,
+file-by-file breakdown of what's finished vs. a documented follow-up.
 
 ## Running it
 
 ```bash
 npm install
-cp .env.example .env.local   # then fill in ANTHROPIC_API_KEY and PG* values
+cp .env.example .env.local   # ANTHROPIC_API_KEY + PG* values (see db/README.md
+                              # for the local Postgres this expects)
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000 (redirects to `/chat`; also see `/cohort`,
+`/auditor`, `/evaluation`).
 
 Other scripts:
 
@@ -26,116 +27,72 @@ npm run test        # vitest run (unit tests)
 npm run test:watch  # vitest watch mode
 npm run lint        # eslint
 npm run build        # next build
-npm run eval:gate    # runs scripts/eval-gate.ts (trivially passes — goldCases.ts is empty)
+npm run eval:gate    # runs scripts/eval-gate.ts -- hard-fails if any
+                      # "test"-split gold case fails (18 cases currently)
 ```
 
-## What's actually wired vs. stubbed
+## What's actually wired vs. remaining gaps
 
-**Genuinely functional (has real logic + tests):**
+**Fully real, with tests, verified live end-to-end (not just unit-tested):**
 
 - `src/lib/sql/astValidator.ts` — the SQL mutation-prevention gate
-  (single-statement / SELECT-only / table-allowlist / LIMIT enforcement),
-  via `node-sql-parser`. Has `astValidator.test.ts` covering the cases in
-  the spec (valid select, DROP/DELETE/UPDATE rejected, multi-statement
-  injection rejected, non-allowlisted table rejected, LIMIT injected/capped).
-- `src/lib/guardrails/preChecks.ts` — Layer 1 deterministic checks (empty
-  input, hardcoded PHI-request patterns, too-short-question clarify). Has
-  `preChecks.test.ts`.
-- `src/lib/guardrails/classify.ts` — Layer 2 LLM classifier. Makes a real
-  `@anthropic-ai/sdk` call with a Zod-validated structured output schema.
-  Tested with a mocked Anthropic client (`classify.test.ts`) — never hits
-  the real API in tests.
-- `src/lib/guardrails/index.ts` — combines the two into `runGuardrails()`.
-- `src/app/api/chat/route.ts` — the orchestration seam (guardrails -> Tier
-  3 -> Tier 4 -> DB execution), end to end at the *control-flow* level.
-  Tested with mocked dependencies (`route.test.ts`) so it never hits a real
-  DB or Anthropic.
-- `src/lib/db/client.ts` — a real `pg.Pool` + `query<T>()` helper against
-  the standard `PG*` env vars.
+  (`node-sql-parser`: single-statement / SELECT-only / table-allowlist /
+  LIMIT enforcement).
+- `src/lib/guardrails/preChecks.ts` (Layer 1, deterministic) +
+  `classify.ts` (Layer 2 — a real `@anthropic-ai/sdk` forced tool-use
+  call, zod-validated; **not** an OpenAI-style `messages.parse()` /
+  `zodOutputFormat` pattern, which doesn't exist in this SDK).
+- `src/lib/text2sql/semanticCatalog.ts` — reads the live `sem.*` catalog
+  from `information_schema` for the Tier 3 prompt (no more hardcoded
+  placeholder schema).
+- `src/lib/text2sql/verifiedQueries.ts` + `tier3.ts` — exact-match
+  verified-query cache, then a real grounded Claude call, validated
+  through `astValidator.ts`, with one repair-retry on rejection.
+- `src/lib/sql/fieldSearch.ts` + `src/lib/text2sql/tier4.ts` — real
+  `pg_trgm` trigram search over `ont.field_label`, then a real Claude
+  call grounded only on the surfaced candidates, same validate/retry
+  pattern.
+- `src/app/api/chat/route.ts` — the full orchestration seam (guardrails
+  → Tier 3 → Tier 4 → DB execution).
+- `src/app/chat/`, `src/app/cohort/` — real UIs (free-text chat;
+  structured Clinical Cohort Builder form with CSV export). The
+  Cohort Builder surfaces an explicit caveat that FAERS "seriousness"
+  flags are a documented severity **proxy**, not a real CTCAE grade.
+- `src/app/auditor/` — submits a question through the pipeline, shows
+  the resulting SQL + AST-validator verdict, and a `reactflow` schema
+  DAG (`schemaGraph.ts`, built from the real `ont.*`/`sem.*` DDL) with
+  the query's actual referenced tables highlighted.
+- `src/app/evaluation/` — live dashboard over `scripts/eval/goldCases.ts`
+  (18 cases across `guardrail_offtopic`/`inappropriate`/`injection`,
+  `ambiguous_clarify`, `hallucination_resistance`, `tier4_longtail`),
+  category/split pass-rate table, promotion-gate status.
 
-**Wired end-to-end but with placeholder content (will produce weak or
-wrong answers until filled in):**
+**Remaining gaps (documented, not silently missing):**
 
-- `src/lib/text2sql/tier3.ts` — makes a real Claude call and validates its
-  SQL output via `astValidator.ts`, but the schema description in the
-  prompt is a **hardcoded placeholder**, not the real `sem.*` catalog.
-  See the TODOs in that file (`loadSemanticViewCatalog()`, verified-query
-  cache, explicit FK/join contract, repair-prompt retry loop) — none of
-  those are built yet.
-- `tier4Pool` in `src/lib/db/client.ts` is currently an alias to the same
-  pool as Tier 1–3's `app_runtime` connection. It is **not** actually a
-  separate `app_runtime_tier4` role/connection yet — that role doesn't
-  exist in `db/ddl` at time of writing. Treat this as unsafe to point at
-  raw tables until it's a real second connection.
+- `tier4Pool` in `src/lib/db/client.ts` is still an alias to the same
+  pool as the `app_runtime` connection — `db/ddl/005_roles.sql` already
+  creates the narrower `app_runtime_tier4` role, but the app doesn't yet
+  authenticate a second `pg.Pool` against it. See the TODO in that file.
+- Gold-case suite covers 18 of a planned 30+ cases. `tier3_quantitative`,
+  `tier3_cohort`, `tier3_multiturn`, and `unanswerable` need real
+  reference numbers from a larger FAERS/ClinicalTrials.gov load than the
+  small verification slice this repo has loaded so far — deliberately
+  left as a follow-up rather than fabricated.
+- Streaming: `route.ts` returns a single JSON response, not a token
+  stream.
+- Conversation history: `route.ts` always calls `generateTier3Sql` with
+  an empty history array — nothing persists/loads history by
+  `sessionId` yet, so multi-turn follow-ups aren't grounded even though
+  `tier3.ts`'s signature already accepts history.
+- Verified-query cache (`verifiedQueries.ts`) is exact-match only, no
+  fuzzy/embedding similarity yet.
 
-**Fully stubbed (always returns a fixed placeholder result):**
+## Notes worth knowing about
 
-- `src/lib/text2sql/tier4.ts` — `tier4Fallback()` always returns
-  `{ kind: "no_answer" }`. The real plan (pg_trgm similarity search over
-  `ont.field`/`ont.drug_synonym`, LLM SQL-gen grounded on the ranked
-  candidates, validation against the raw-table allowlist) is documented in
-  a comment block in that file but not implemented.
-- The four tabs in `src/app/page.tsx` (Chat, Cohort Builder, SQL + Schema
-  Auditor, Evaluation) are placeholder `<div>`s with a heading and one
-  descriptive sentence each — no real UI behind any of them yet. There is
-  no client-side wiring to `/api/chat` from the Chat tab yet.
-- `scripts/eval/goldCases.ts` — an empty, typed array with a large TODO
-  comment listing the categories a real gold set needs (30+ cases across
-  `tier3_quantitative`, `tier3_cohort`, `tier3_multiturn`, `tier4_longtail`,
-  `unanswerable`, `ambiguous_clarify`, the three `guardrail_*` categories,
-  and `hallucination_resistance`). `scripts/eval/runner.ts` and
-  `scripts/eval-gate.ts` are real drivers, but with zero cases to run they
-  trivially pass.
-- Streaming: `route.ts` returns a single JSON response, not a stream. Noted
-  as a TODO in that file — add streaming once NL-rendering of results is
-  built.
-- Conversation history: `route.ts` always calls `generateTier3Sql` with an
-  empty history array; nothing persists/loads history by `sessionId` yet,
-  so `tier3_multiturn`-style follow-ups aren't actually grounded yet even
-  though the `tier3.ts` function signature already accepts history.
-
-## Assumptions worth knowing about
-
-- The DB schema (`sem.*`, `ont.*`, raw `faers.*`/`ct.*`) is owned by a
-  concurrent track (`db/`) and wasn't available to inspect while writing
-  this pass — table/column names used in placeholder prompts and
-  allowlists are best-effort guesses at the contract described in the
-  project brief, not verified against real DDL.
-- Dependency versions in `package.json` are recent-stable `^` ranges
-  chosen without running `npm install` (per instructions) — re-check
-  `@anthropic-ai/sdk` in particular against its current release once you
-  do install, since its structured-output helpers (`messages.parse` +
-  `zodOutputFormat`) are a relatively new API surface.
-- `node-sql-parser`'s exact AST shape for `LIMIT` (`{ seperator, value }`)
-  is written from its documented/known API; if the installed version's
-  shape differs, `astValidator.test.ts` will catch it immediately.
-
-## Chat and Cohort Builder tabs
-
-`src/app/chat/` (free-text chat) and `src/app/cohort/` (structured cohort
-form) are now real, tested UIs — not the placeholder `<div>`s described
-above. Both call `POST /api/chat` through a small shared client
-(`src/app/chat/apiClient.ts`, re-exported from `src/app/cohort/apiClient.ts`)
-and render every documented response `kind` (`tier3`/`tier4` success,
-`reject`, `clarify`, `no_answer`) plus a client-side fetch-failure state.
-
-This UI is built against, and tested against, `route.ts`'s *current*
-response shape — including its stubbed/placeholder paths (e.g. `tier4`
-always returning `no_answer` today). It does not assume any particular
-tier is fully implemented. As Tier 3/4 are filled in with real SQL
-generation, the same `kind`/`sql`/`rows` fields will simply carry real
-content — **no UI change is required** unless the response shape itself
-changes (e.g. if streaming is introduced, or a new `kind` value is added
-that isn't one of the five above, in which case it currently falls through
-to the generic "success" rendering path since `sql`/`rows` are read
-optionally).
-
-Known caveat surfaced in the Cohort Builder UI (not a code TODO, an
-intentional documented limitation): FAERS has no real CTCAE severity
-grade. The "serious only / any" toggle is labeled with a note that FAERS
-"seriousness" flags (hospitalization, life-threatening, death, disability)
-are used as a proxy for severity, not a real clinical grade.
-
-Tests: `src/app/chat/page.test.tsx` and `src/app/cohort/page.test.tsx`
-(vitest + `@testing-library/react`, `fetch`/`apiClient` mocked — no real
-network or DB calls).
+- `node-sql-parser`'s `AST`/`Select` types (not `Record<string, unknown>`)
+  are used directly in `astValidator.ts` — verified against the
+  installed package's own `.d.ts`, not guessed.
+- Table/column names throughout `src/lib/text2sql/` and
+  `src/app/auditor/schemaGraph.ts` are read from the real
+  `db/ddl/003_ontology.sql` / `004_semantic_views.sql`, not guessed at a
+  contract.
