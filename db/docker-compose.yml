@@ -1,0 +1,49 @@
+# PharmaSentinel local database
+#
+# Single-node Postgres 16 used as the storage layer for all four tiers of the
+# text-to-SQL platform (raw faers/ct schemas, ont, sem). We run this on plain
+# Docker rather than Snowflake because the project targets a self-hostable,
+# no-cloud-dependency demo/dev environment -- everything downstream (DDL,
+# ETL, semantic views, role grants) is written in standard PostgreSQL, not
+# Snowflake SQL.
+#
+# Usage:
+#   cp db/.env.example db/.env   # then edit password
+#   docker compose -f db/docker-compose.yml --env-file db/.env up -d
+#
+# See db/README.md for the full bootstrap sequence (DDL + seed load order).
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: pharmasentinel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pharmasentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-pharmasentinel}
+    ports:
+      # Host:container, bound to loopback only. Host port is 5439, not the
+      # default 5432 -- this machine already runs other Postgres containers
+      # on 5432/5433 for unrelated projects, and 5432:5432 fails to bind
+      # when one of those is up. Override via POSTGRES_HOST_PORT if 5439 is
+      # ever taken too.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5439}:5432"
+    volumes:
+      # Named volume so `docker compose down` (without -v) preserves data
+      # across restarts -- important since this holds the raw FAERS/CT
+      # tables the ETL tracks load, which are slow to re-download/re-ingest.
+      - pharmasentinel-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready confirms the server is accepting connections, not just
+      # that the process is up -- compose/ETL scripts can depend on
+      # `service_healthy` to avoid racing container startup.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pharmasentinel} -d ${POSTGRES_DB:-pharmasentinel}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pharmasentinel-pgdata:
+    name: pharmasentinel-pgdata

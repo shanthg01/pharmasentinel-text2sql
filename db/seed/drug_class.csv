@@ -1,0 +1,26 @@
+ingredient,drug_class
+imatinib,kinase inhibitor
+erlotinib,kinase inhibitor
+gefitinib,kinase inhibitor
+sunitinib,kinase inhibitor
+sorafenib,kinase inhibitor
+dasatinib,kinase inhibitor
+nilotinib,kinase inhibitor
+lapatinib,kinase inhibitor
+pazopanib,kinase inhibitor
+vemurafenib,kinase inhibitor
+crizotinib,kinase inhibitor
+axitinib,kinase inhibitor
+bosutinib,kinase inhibitor
+cabozantinib,kinase inhibitor
+ceritinib,kinase inhibitor
+ibrutinib,kinase inhibitor
+osimertinib,kinase inhibitor
+palbociclib,kinase inhibitor
+ruxolitinib,kinase inhibitor
+regorafenib,kinase inhibitor
+pembrolizumab,PD-1 inhibitor
+nivolumab,PD-1 inhibitor
+olaparib,PARP inhibitor
+rucaparib,PARP inhibitor
+everolimus,mTOR inhibitor
