@@ -109,3 +109,33 @@ wrong answers until filled in):**
 - `node-sql-parser`'s exact AST shape for `LIMIT` (`{ seperator, value }`)
   is written from its documented/known API; if the installed version's
   shape differs, `astValidator.test.ts` will catch it immediately.
+
+## Chat and Cohort Builder tabs
+
+`src/app/chat/` (free-text chat) and `src/app/cohort/` (structured cohort
+form) are now real, tested UIs — not the placeholder `<div>`s described
+above. Both call `POST /api/chat` through a small shared client
+(`src/app/chat/apiClient.ts`, re-exported from `src/app/cohort/apiClient.ts`)
+and render every documented response `kind` (`tier3`/`tier4` success,
+`reject`, `clarify`, `no_answer`) plus a client-side fetch-failure state.
+
+This UI is built against, and tested against, `route.ts`'s *current*
+response shape — including its stubbed/placeholder paths (e.g. `tier4`
+always returning `no_answer` today). It does not assume any particular
+tier is fully implemented. As Tier 3/4 are filled in with real SQL
+generation, the same `kind`/`sql`/`rows` fields will simply carry real
+content — **no UI change is required** unless the response shape itself
+changes (e.g. if streaming is introduced, or a new `kind` value is added
+that isn't one of the five above, in which case it currently falls through
+to the generic "success" rendering path since `sql`/`rows` are read
+optionally).
+
+Known caveat surfaced in the Cohort Builder UI (not a code TODO, an
+intentional documented limitation): FAERS has no real CTCAE severity
+grade. The "serious only / any" toggle is labeled with a note that FAERS
+"seriousness" flags (hospitalization, life-threatening, death, disability)
+are used as a proxy for severity, not a real clinical grade.
+
+Tests: `src/app/chat/page.test.tsx` and `src/app/cohort/page.test.tsx`
+(vitest + `@testing-library/react`, `fetch`/`apiClient` mocked — no real
+network or DB calls).
