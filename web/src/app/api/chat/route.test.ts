@@ -4,6 +4,7 @@ const runGuardrailsMock = vi.fn();
 const generateTier3SqlMock = vi.fn();
 const tier4FallbackMock = vi.fn();
 const queryMock = vi.fn();
+const queryTier4Mock = vi.fn();
 
 vi.mock("@/lib/guardrails", () => ({
   runGuardrails: runGuardrailsMock,
@@ -16,6 +17,7 @@ vi.mock("@/lib/text2sql/tier4", () => ({
 }));
 vi.mock("@/lib/db/client", () => ({
   query: queryMock,
+  queryTier4: queryTier4Mock,
 }));
 
 const { POST } = await import("./route");
@@ -33,6 +35,7 @@ describe("POST /api/chat", () => {
     generateTier3SqlMock.mockReset();
     tier4FallbackMock.mockReset();
     queryMock.mockReset();
+    queryTier4Mock.mockReset();
   });
 
   it("returns 400 for a missing question, without touching guardrails/db", async () => {
@@ -73,5 +76,44 @@ describe("POST /api/chat", () => {
 
     expect(json.kind).toBe("clarify");
     expect(generateTier3SqlMock).not.toHaveBeenCalled();
+  });
+
+  it("executes tier3 SQL through query() (app_runtime, sem.*/ont.* only), never queryTier4()", async () => {
+    runGuardrailsMock.mockResolvedValue({ verdict: "allow" });
+    generateTier3SqlMock.mockResolvedValue({
+      kind: "sql",
+      sql: "SELECT * FROM sem.faers_case_summary LIMIT 10",
+    });
+    queryMock.mockResolvedValue([{ safetyreportid: "1" }]);
+
+    const response = await POST(
+      makeRequest({ question: "How many cases for imatinib?", sessionId: "s1" }),
+    );
+    const json = await response.json();
+
+    expect(json.kind).toBe("tier3");
+    expect(queryMock).toHaveBeenCalledWith(
+      "SELECT * FROM sem.faers_case_summary LIMIT 10",
+    );
+    expect(queryTier4Mock).not.toHaveBeenCalled();
+  });
+
+  it("executes tier4 SQL through queryTier4() (app_runtime_tier4, raw faers.*/ct.* grant), never query()", async () => {
+    runGuardrailsMock.mockResolvedValue({ verdict: "allow" });
+    generateTier3SqlMock.mockResolvedValue({ kind: "no_match" });
+    tier4FallbackMock.mockResolvedValue({
+      kind: "sql",
+      sql: "SELECT * FROM faers.report LIMIT 10",
+    });
+    queryTier4Mock.mockResolvedValue([{ safetyreportid: "1" }]);
+
+    const response = await POST(
+      makeRequest({ question: "What's in the flibbertigibbet column?", sessionId: "s1" }),
+    );
+    const json = await response.json();
+
+    expect(json.kind).toBe("tier4");
+    expect(queryTier4Mock).toHaveBeenCalledWith("SELECT * FROM faers.report LIMIT 10");
+    expect(queryMock).not.toHaveBeenCalled();
   });
 });
