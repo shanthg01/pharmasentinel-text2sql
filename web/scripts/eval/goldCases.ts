@@ -1,5 +1,7 @@
 import { runGuardrails } from "../../src/lib/guardrails";
 import { tier4Fallback } from "../../src/lib/text2sql/tier4";
+import { generateTier3Sql } from "../../src/lib/text2sql/tier3";
+import { query } from "../../src/lib/db/client";
 
 export interface GoldCase {
   id: string;
@@ -199,21 +201,262 @@ async function assertTier4StubNoAnswer(
 }
 
 /**
+ * Regex-based spot-check that a Tier 3-generated SQL string only touches a
+ * schema-qualified `sem.*` (or `ont.*`) table/view after `FROM`/`JOIN` —
+ * NOT a substitute for the real `astValidator.ts` pass `generateTier3Sql`
+ * already runs internally before it ever returns a `{kind: "sql"}` result
+ * (see `validateWithRepair` in `src/lib/text2sql/tier3.ts`); just a second,
+ * cheap guard in this suite against ever executing something that slipped
+ * through as a raw `faers.*`/`ct.*` reference. Deliberately anchored on
+ * `FROM`/`JOIN` rather than matching `faers.`/`ct.` anywhere in the string,
+ * so a harmless column reference through an alias literally named `ct`
+ * (e.g. `sem.trials_summary AS ct` ... `ct.nct_id`) can't false-positive.
+ */
+function referencesRawTables(sql: string): boolean {
+  return /\b(from|join)\s+(faers|ct)\.[a-z_][a-z0-9_]*\b/i.test(sql);
+}
+
+/**
+ * Shared assertion helper for `tier3_quantitative`: calls the real
+ * `generateTier3Sql(question, [])`, requires it to return `{kind: "sql"}`
+ * (failing the case for `clarify`/`no_match`), spot-checks the SQL only
+ * touches `sem.*`/`ont.*` tables, executes it through the real `query()`
+ * helper, and asserts the first row's value matches `expectedCount`
+ * exactly (these are exact reference counts from a live `psql` query
+ * against the loaded dataset, not estimates — see each gold case's comment
+ * for the exact verification query/output).
+ *
+ * Requires a live ANTHROPIC_API_KEY — `generateTier3Sql` always calls
+ * Claude except on a verified-query-cache hit (`verifiedQueries.ts`), and
+ * none of these questions match a seeded cache entry — so this skips the
+ * same way `assertGuardrailVerdict` does rather than throw `Could not
+ * resolve authentication method` in an environment with no key configured.
+ */
+async function assertTier3QuantitativeMatches(
+  question: string,
+  expectedCount: number,
+): Promise<{ pass: boolean; detail: string }> {
+  if (!hasLiveAnthropicCredentials()) {
+    return {
+      pass: true,
+      detail:
+        "Skipped: generateTier3Sql needs a live ANTHROPIC_API_KEY not configured in this environment. Re-run with real credentials to actually exercise it.",
+    };
+  }
+
+  const result = await generateTier3Sql(question, []);
+  if (result.kind !== "sql") {
+    return {
+      pass: false,
+      detail: `Expected generateTier3Sql to return "sql", got "${result.kind}"${
+        result.kind === "clarify" ? ` (asked: "${result.question}")` : ""
+      }.`,
+    };
+  }
+
+  if (referencesRawTables(result.sql)) {
+    return {
+      pass: false,
+      detail: `Generated SQL appears to reference a raw faers.*/ct.* table, not sem.*: ${result.sql}`,
+    };
+  }
+
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await query(result.sql);
+  } catch (err) {
+    return {
+      pass: false,
+      detail: `Executing the generated SQL failed: ${(err as Error).message}. SQL: ${result.sql}`,
+    };
+  }
+
+  if (rows.length === 0) {
+    return {
+      pass: false,
+      detail: `Generated SQL returned zero rows, expected a count of ${expectedCount}. SQL: ${result.sql}`,
+    };
+  }
+
+  const firstRow = rows[0] as Record<string, unknown>;
+  const rawValue = Object.values(firstRow)[0];
+  const actualCount = Number(rawValue);
+
+  if (!Number.isFinite(actualCount) || actualCount !== expectedCount) {
+    return {
+      pass: false,
+      detail: `Expected count ${expectedCount}, got ${String(rawValue)} (row: ${JSON.stringify(firstRow)}). SQL: ${result.sql}`,
+    };
+  }
+
+  return {
+    pass: true,
+    detail: `Generated SQL returned the expected count ${expectedCount}. SQL: ${result.sql}`,
+  };
+}
+
+/**
+ * Shared assertion helper for `tier3_cohort`: calls `generateTier3Sql`,
+ * requires `{kind: "sql"}`, spot-checks the sem.* / ont.* table allowlist,
+ * executes the SQL, and checks that `expectedNctId` appears somewhere
+ * among the returned rows. This is precision/recall in miniature — it only
+ * checks the expected id is present, not an exact row-for-row match,
+ * because the model's exact SQL phrasing (which columns it selects, extra
+ * filters, etc.) may vary between runs while still being correct.
+ *
+ * Same live-Anthropic requirement/skip pattern as
+ * `assertTier3QuantitativeMatches` above.
+ */
+async function assertTier3CohortIncludesNctId(
+  question: string,
+  expectedNctId: string,
+): Promise<{ pass: boolean; detail: string }> {
+  if (!hasLiveAnthropicCredentials()) {
+    return {
+      pass: true,
+      detail:
+        "Skipped: generateTier3Sql needs a live ANTHROPIC_API_KEY not configured in this environment. Re-run with real credentials to actually exercise it.",
+    };
+  }
+
+  const result = await generateTier3Sql(question, []);
+  if (result.kind !== "sql") {
+    return {
+      pass: false,
+      detail: `Expected generateTier3Sql to return "sql", got "${result.kind}"${
+        result.kind === "clarify" ? ` (asked: "${result.question}")` : ""
+      }.`,
+    };
+  }
+
+  if (referencesRawTables(result.sql)) {
+    return {
+      pass: false,
+      detail: `Generated SQL appears to reference a raw faers.*/ct.* table, not sem.*: ${result.sql}`,
+    };
+  }
+
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await query(result.sql);
+  } catch (err) {
+    return {
+      pass: false,
+      detail: `Executing the generated SQL failed: ${(err as Error).message}. SQL: ${result.sql}`,
+    };
+  }
+
+  const found = rows.some((row) =>
+    Object.values(row).some(
+      (value) => typeof value === "string" && value.includes(expectedNctId),
+    ),
+  );
+
+  if (!found) {
+    return {
+      pass: false,
+      detail: `Expected "${expectedNctId}" to appear among the returned rows, but it did not (${rows.length} row(s) returned). SQL: ${result.sql}`,
+    };
+  }
+
+  return {
+    pass: true,
+    detail: `Found expected "${expectedNctId}" among the returned rows (${rows.length} row(s) total). SQL: ${result.sql}`,
+  };
+}
+
+/**
+ * Shared assertion helper for `unanswerable`: the question names a REAL
+ * drug (unlike `hallucination_resistance`'s fabricated entities) that has
+ * been verified, via a live query against the loaded dataset, to have zero
+ * rows anywhere in `sem.faers_case_summary` — i.e. genuinely out of this
+ * narrow slice's scope, not a fictitious entity.
+ *
+ * Asserts the pipeline declines gracefully: `generateTier3Sql` returning
+ * `no_match` or `clarify` both count as a graceful decline, and so does
+ * `kind: "sql"` whose executed result is empty/all-zero (an "answerable
+ * but empty" outcome is acceptable too). Only fails the case if the
+ * generated SQL throws on execution, or returns non-empty/non-zero rows
+ * for a question this dataset has no data to answer.
+ *
+ * Same live-Anthropic requirement/skip pattern as the two helpers above.
+ */
+async function assertUnanswerableGracefully(
+  question: string,
+): Promise<{ pass: boolean; detail: string }> {
+  if (!hasLiveAnthropicCredentials()) {
+    return {
+      pass: true,
+      detail:
+        "Skipped: generateTier3Sql needs a live ANTHROPIC_API_KEY not configured in this environment. Re-run with real credentials to actually exercise it.",
+    };
+  }
+
+  let result: Awaited<ReturnType<typeof generateTier3Sql>>;
+  try {
+    result = await generateTier3Sql(question, []);
+  } catch (err) {
+    return {
+      pass: false,
+      detail: `generateTier3Sql threw unexpectedly instead of declining gracefully: ${(err as Error).message}`,
+    };
+  }
+
+  if (result.kind === "no_match" || result.kind === "clarify") {
+    return {
+      pass: true,
+      detail: `generateTier3Sql declined gracefully with kind "${result.kind}", as expected for a real-but-unloaded entity.`,
+    };
+  }
+
+  if (referencesRawTables(result.sql)) {
+    return {
+      pass: false,
+      detail: `Generated SQL appears to reference a raw faers.*/ct.* table, not sem.*: ${result.sql}`,
+    };
+  }
+
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await query(result.sql);
+  } catch (err) {
+    return {
+      pass: false,
+      detail: `Executing the generated SQL failed: ${(err as Error).message}. SQL: ${result.sql}`,
+    };
+  }
+
+  const isEmptyOrZero =
+    rows.length === 0 ||
+    (rows.length === 1 &&
+      Object.values(rows[0] as Record<string, unknown>).every(
+        (v) => v === 0 || v === "0" || v === null,
+      ));
+
+  if (!isEmptyOrZero) {
+    return {
+      pass: false,
+      detail: `Expected an empty/zero result for this real-but-unloaded entity, but got rows that look like they might be fabricated/wrong: ${JSON.stringify(rows)}. SQL: ${result.sql}`,
+    };
+  }
+
+  return {
+    pass: true,
+    detail: `Generated SQL executed but returned an empty/zero result — an acceptable "answerable but empty" outcome for a real entity absent from this dataset slice. SQL: ${result.sql}`,
+  };
+}
+
+/**
  * Gold-case suite.
  *
  * Populated so far: guardrail_offtopic, guardrail_inappropriate,
- * guardrail_injection, ambiguous_clarify, hallucination_resistance, and
- * tier4_longtail — the categories from the eval plan (see the category
- * list this header used to carry) that don't require live FAERS/CT.gov
- * data to be loaded.
+ * guardrail_injection, ambiguous_clarify, hallucination_resistance,
+ * tier4_longtail, tier3_quantitative, tier3_cohort, and unanswerable.
  *
- * NOT yet populated (needs real reference numbers from live FAERS/CT.gov
- * data that isn't loaded yet — deliberately left as a documented follow-up
- * rather than fabricated):
- * - tier3_quantitative
- * - tier3_cohort
+ * NOT yet populated (needs multi-turn conversation-history plumbing that a
+ * concurrent track is still landing — deliberately left as a documented
+ * follow-up rather than fabricated):
  * - tier3_multiturn
- * - unanswerable
  *
  * Each populated category has exactly one `split: "test"` case (the most
  * canonical/settled example) and the rest `split: "train"`.
@@ -419,5 +662,118 @@ export const goldCases: GoldCase[] = [
       assertTier4StubNoAnswer(
         "Find any raw ct.study record with a null nct_id and a negative enrollment count.",
       ),
+  },
+
+  // ── tier3_quantitative (Layer 3 LLM required — see requiresAnthropic doc
+  //    above; each reference count re-verified live against the loaded
+  //    dataset via `docker exec pharmasentinel-postgres psql ...`) ────────
+  {
+    // Verified: `SELECT count(*) FROM sem.faers_case_summary WHERE
+    // 'DUPILUMAB' = ANY(primary_suspect_ingredients);` => 70.
+    id: "tier3_quantitative_dupilumab_reports",
+    category: "tier3_quantitative",
+    question: "How many adverse event reports mention dupilumab?",
+    split: "test",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3QuantitativeMatches(
+        "How many adverse event reports mention dupilumab?",
+        70,
+      ),
+  },
+  {
+    // Verified: `SELECT count(*) FROM sem.faers_case_summary WHERE
+    // 'RITUXIMAB' = ANY(primary_suspect_ingredients);` => 62.
+    id: "tier3_quantitative_rituximab_reports",
+    category: "tier3_quantitative",
+    question: "How many adverse event reports mention rituximab?",
+    split: "train",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3QuantitativeMatches(
+        "How many adverse event reports mention rituximab?",
+        62,
+      ),
+  },
+  {
+    // Verified: `SELECT count(*) FROM sem.faers_case_summary WHERE
+    // serious = true;` => 1451 (out of 2000 total reports).
+    id: "tier3_quantitative_serious_reports",
+    category: "tier3_quantitative",
+    question: "How many adverse event reports are marked as serious?",
+    split: "train",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3QuantitativeMatches(
+        "How many adverse event reports are marked as serious?",
+        1451,
+      ),
+  },
+
+  // ── tier3_cohort (Layer 3 LLM required — see requiresAnthropic doc
+  //    above; both linked nct_ids re-verified live via
+  //    sem.drug_trial_ae_link) ───────────────────────────────────────────
+  {
+    // Verified: `SELECT * FROM sem.drug_trial_ae_link WHERE
+    // canonical_ingredient = 'posaconazole';` returns exactly one row,
+    // nct_id = NCT02203773 (a Phase 1 AML trial), linked via a real FAERS
+    // report on posaconazole.
+    id: "tier3_cohort_posaconazole_trials",
+    category: "tier3_cohort",
+    question: "Which trials evaluated posaconazole and had linked adverse event reports?",
+    split: "test",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3CohortIncludesNctId(
+        "Which trials evaluated posaconazole and had linked adverse event reports?",
+        "NCT02203773",
+      ),
+  },
+  {
+    // Verified: `SELECT DISTINCT nct_id FROM sem.drug_trial_ae_link WHERE
+    // canonical_ingredient = 'cisplatin';` returns 13 distinct trials,
+    // including NCT00004900.
+    id: "tier3_cohort_cisplatin_trials",
+    category: "tier3_cohort",
+    question: "Which clinical trials studying cisplatin have linked FAERS adverse event reports?",
+    split: "train",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3CohortIncludesNctId(
+        "Which clinical trials studying cisplatin have linked FAERS adverse event reports?",
+        "NCT00004900",
+      ),
+  },
+
+  // ── unanswerable (Layer 3 LLM required — see requiresAnthropic doc
+  //    above; both drugs are REAL (unlike hallucination_resistance's
+  //    fabricated entities) but verified live to have zero rows anywhere
+  //    in this loaded 2023Q4 FAERS slice) ──────────────────────────────
+  {
+    // Verified: `SELECT count(*) FROM sem.faers_case_summary c,
+    // unnest(c.primary_suspect_ingredients) i WHERE i ILIKE '%penicillin%';`
+    // => 0 (checked case-insensitively across every ingredient string in
+    // the loaded slice, not just an exact-case match, and
+    // `SELECT count(*) FROM ont.drug_class WHERE ingredient ILIKE
+    // '%penicillin%';` also => 0).
+    id: "unanswerable_penicillin_reports",
+    category: "unanswerable",
+    question: "How many adverse event reports mention penicillin?",
+    split: "test",
+    requiresAnthropic: true,
+    assert: () =>
+      assertUnanswerableGracefully("How many adverse event reports mention penicillin?"),
+  },
+  {
+    // Verified: `SELECT count(*) FROM sem.faers_case_summary c,
+    // unnest(c.primary_suspect_ingredients) i WHERE i ILIKE '%digoxin%';`
+    // => 0, and the same ILIKE check against ont.drug_class also => 0.
+    id: "unanswerable_digoxin_reports",
+    category: "unanswerable",
+    question: "How many adverse event reports mention digoxin?",
+    split: "train",
+    requiresAnthropic: true,
+    assert: () =>
+      assertUnanswerableGracefully("How many adverse event reports mention digoxin?"),
   },
 ];
