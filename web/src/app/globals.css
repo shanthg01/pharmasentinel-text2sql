@@ -84,3 +84,192 @@ body {
   color: var(--ps-muted);
   line-height: 1.5;
 }
+
+/* ── Auditor tab (web/src/app/auditor/*) ─────────────────────────────── */
+
+.auditor-panels {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+@media (max-width: 800px) {
+  .auditor-panels {
+    flex-direction: column;
+  }
+}
+
+.auditor-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--ps-bg);
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.auditor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.auditor-form label {
+  color: var(--ps-muted);
+  font-size: 0.85rem;
+}
+
+.auditor-textarea {
+  background: var(--ps-panel);
+  color: var(--ps-fg);
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+}
+
+.auditor-submit {
+  align-self: flex-start;
+  appearance: none;
+  background: var(--ps-accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.auditor-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auditor-result {
+  margin-top: 1rem;
+}
+
+.auditor-verdict {
+  font-weight: 600;
+  color: var(--ps-fg);
+}
+
+.auditor-message {
+  color: var(--ps-muted);
+}
+
+.auditor-error {
+  color: #ff6b6b;
+}
+
+.auditor-sql {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--ps-panel);
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
+.auditor-tables {
+  color: var(--ps-muted);
+  font-size: 0.85rem;
+}
+
+.auditor-graph-caption {
+  font-size: 0.85rem;
+}
+
+.auditor-graph {
+  width: 100%;
+  height: 420px;
+  background: var(--ps-bg);
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+}
+
+/* ── Evaluation tab (web/src/app/evaluation/*) ───────────────────────── */
+
+.evaluation-run-button {
+  appearance: none;
+  background: var(--ps-accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.evaluation-run-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.evaluation-error {
+  color: #ff6b6b;
+}
+
+.evaluation-total-line {
+  font-weight: 600;
+  color: var(--ps-fg);
+}
+
+.evaluation-gate-line {
+  color: var(--ps-muted);
+}
+
+.evaluation-empty {
+  color: var(--ps-muted);
+}
+
+.evaluation-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+.evaluation-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.evaluation-table th,
+.evaluation-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--ps-border);
+  white-space: nowrap;
+}
+
+.evaluation-detail-cell {
+  white-space: normal;
+  min-width: 240px;
+  color: var(--ps-muted);
+}
+
+.evaluation-pill {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.evaluation-pill--green {
+  background: #3ecf6e;
+}
+
+.evaluation-pill--amber {
+  background: #f5a623;
+}
+
+.evaluation-pill--red {
+  background: #ff6b6b;
+}
+
