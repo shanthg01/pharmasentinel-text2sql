@@ -765,15 +765,28 @@ export const goldCases: GoldCase[] = [
       assertUnanswerableGracefully("How many adverse event reports mention penicillin?"),
   },
   {
-    // Verified: `SELECT count(*) FROM sem.faers_case_summary c,
-    // unnest(c.primary_suspect_ingredients) i WHERE i ILIKE '%digoxin%';`
-    // => 0, and the same ILIKE check against ont.drug_class also => 0.
-    id: "unanswerable_digoxin_reports",
+    // digoxin was the original choice here, but live testing (with a real
+    // ANTHROPIC_API_KEY -- see the eval-gate env-loading fix) caught that
+    // it's a BAD "unanswerable" example: it's absent as a primary-suspect
+    // drug (`sem.faers_case_summary`) but genuinely present as a
+    // concomitant/non-suspect drug in `sem.faers_drug_reaction` (58 real
+    // rows, `SELECT count(*) FROM sem.faers_drug_reaction WHERE
+    // active_ingredient ILIKE '%digoxin%';`) -- so a model reasonably
+    // answering the "any role" reading of this question returns a real,
+    // correct, non-fabricated number, which this case can't distinguish
+    // from an actual failure. Replaced with chloramphenicol, verified
+    // absent under EVERY reading: `SELECT count(*) FROM
+    // sem.faers_case_summary c, unnest(c.primary_suspect_ingredients) i
+    // WHERE i ILIKE '%chloramphenicol%';` => 0, `SELECT count(*) FROM
+    // sem.faers_drug_reaction WHERE active_ingredient ILIKE
+    // '%chloramphenicol%';` => 0, and `SELECT count(*) FROM
+    // ont.drug_class WHERE ingredient ILIKE '%chloramphenicol%';` => 0.
+    id: "unanswerable_chloramphenicol_reports",
     category: "unanswerable",
-    question: "How many adverse event reports mention digoxin?",
+    question: "How many adverse event reports mention chloramphenicol?",
     split: "train",
     requiresAnthropic: true,
     assert: () =>
-      assertUnanswerableGracefully("How many adverse event reports mention digoxin?"),
+      assertUnanswerableGracefully("How many adverse event reports mention chloramphenicol?"),
   },
 ];

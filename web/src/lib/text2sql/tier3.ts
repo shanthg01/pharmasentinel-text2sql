@@ -34,7 +34,26 @@ Relationships between these views (do not invent any other join path):
   faers.report and key on safetyreportid, but are two different grains
   (one row per case, vs. one row per drug x reaction pair on a case) --
   they are not meant to be joined to each other; pick whichever one
-  already matches the grain the question needs.
+  already matches the grain the question needs. They also differ in
+  drug SCOPE, not just grain, and that distinction matters for which one
+  answers a plain counting question correctly:
+    - sem.faers_case_summary only ever reflects PRIMARY SUSPECT drugs
+      (drugcharacterization = '1').
+    - sem.faers_drug_reaction is deliberately UNFILTERED -- every drug on
+      a report (suspect, concomitant, or interacting) crossed with every
+      reaction on that same report.
+  Standard FAERS pharmacovigilance convention treats the primary suspect
+  drug as the analytically relevant one for a report -- so a plain
+  question like "how many reports mention/involve drug X" or "how many
+  adverse event reports for drug X" should default to
+  sem.faers_case_summary (filtered on X being in primary_suspect_ingredients),
+  NOT sem.faers_drug_reaction, even though X may also technically appear
+  in faers_drug_reaction as a concomitant/interacting drug on other
+  reports where it was never the suspect. Reach for
+  sem.faers_drug_reaction instead only when the question is explicitly
+  about co-occurrence regardless of suspect role (e.g. "which drugs
+  were reported alongside X on any report", "what reactions were
+  reported for X in any role").
 - sem.trials_summary and sem.trials_outcomes both key on nct_id (one row
   per study, vs. one row per outcome measure on that study).
 - sem.drug_trial_ae_link is the ONLY cross-dataset view linking trials to
@@ -51,6 +70,19 @@ Relationships between these views (do not invent any other join path):
   throughout this platform as a documented PROXY for adverse event
   severity -- FAERS has no CTCAE numeric grade field. Never describe or
   treat them as a clinical trial "Grade".
+- Raw drug/ingredient name columns -- sem.faers_case_summary's
+  primary_suspect_ingredients (a text[]) and sem.faers_drug_reaction's
+  active_ingredient -- preserve whatever case the source FAERS data used
+  (typically upper-case, e.g. 'DUPILUMAB'), and are NOT guaranteed to
+  match the case a user's question spells a drug name in. NEVER compare
+  them with a bare case-sensitive '=' or 'x = ANY(...)' -- always match
+  case-insensitively (e.g. 'ILIKE' for a scalar column, or
+  'EXISTS (SELECT 1 FROM unnest(primary_suspect_ingredients) i WHERE i
+  ILIKE '<name>')' for the array column). sem.drug_trial_ae_link's
+  canonical_ingredient is the one column that IS already
+  lower-cased by the view itself -- safe to compare with a plain
+  lower-cased literal there, but that guarantee does not extend to the
+  two raw columns above.
 `.trim();
 
 let cachedClient: Anthropic | null = null;
