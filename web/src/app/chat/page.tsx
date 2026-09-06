@@ -1,13 +1,26 @@
 "use client";
 
 import { useId, useState, type FormEvent } from "react";
-import { postChat, newSessionId, type ChatApiResponse } from "./apiClient";
+import {
+  postChatStream,
+  newSessionId,
+  type ChatStreamMetadata,
+} from "./apiClient";
 import { ResultTable } from "./ResultTable";
+
+// The assistant side of a message is built up progressively as
+// `postChatStream` yields updates: it starts as `{ kind: "pending" }` (no
+// metadata yet), becomes `ChatStreamMetadata & { text }` once the first
+// update (the metadata line) arrives, with `text` growing on every
+// subsequent chunk -- see apiClient.ts's STREAMING WIRE FORMAT comment.
+type AssistantContent =
+  | { kind: "error"; message: string }
+  | { kind: "pending" }
+  | (ChatStreamMetadata & { text: string });
 
 type ChatMessage =
   | { role: "user"; content: string }
-  | { role: "assistant"; content: ChatApiResponse }
-  | { role: "assistant"; content: { kind: "error"; message: string } };
+  | { role: "assistant"; content: AssistantContent };
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -27,15 +40,37 @@ export default function ChatPage() {
     setInput("");
     setLoading(true);
 
+    // Index of the assistant placeholder this request will progressively
+    // update in place as streamed chunks arrive. `setMessages` functional
+    // updaters run synchronously (in call order) even though the resulting
+    // re-render may be batched, so capturing the index here is safe.
+    let assistantIndex = -1;
+    setMessages((prev) => {
+      assistantIndex = prev.length;
+      return [...prev, { role: "assistant", content: { kind: "pending" } }];
+    });
+
     try {
-      const response = await postChat(question, sessionId);
-      setMessages((prev) => [...prev, { role: "assistant", content: response }]);
+      for await (const update of postChatStream(question, sessionId)) {
+        setMessages((prev) => {
+          const next = [...prev];
+          next[assistantIndex] = {
+            role: "assistant",
+            content: { ...update.metadata, text: update.textSoFar },
+          };
+          return next;
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong.";
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: { kind: "error", message } },
-      ]);
+      setMessages((prev) => {
+        const next = [...prev];
+        next[assistantIndex] = {
+          role: "assistant",
+          content: { kind: "error", message },
+        };
+        return next;
+      });
     } finally {
       setLoading(false);
     }
@@ -55,12 +90,6 @@ export default function ChatPage() {
           <p className="chat-empty">No messages yet — ask a question below to get started.</p>
         ) : (
           messages.map((message, index) => <ChatMessageBubble key={index} message={message} />)
-        )}
-        {loading && (
-          <div className="chat-bubble chat-bubble--assistant chat-bubble--loading">
-            <div className="chat-bubble-label">Assistant</div>
-            <div>Thinking…</div>
-          </div>
         )}
       </div>
 
@@ -112,6 +141,15 @@ function ChatMessageBubble({ message }: { message: ChatMessage }) {
     );
   }
 
+  if (content.kind === "pending") {
+    return (
+      <div className="chat-bubble chat-bubble--assistant chat-bubble--loading">
+        <div className="chat-bubble-label">Assistant</div>
+        <div>Thinking…</div>
+      </div>
+    );
+  }
+
   if (content.kind === "reject" || content.kind === "clarify") {
     return (
       <div
@@ -121,7 +159,7 @@ function ChatMessageBubble({ message }: { message: ChatMessage }) {
         <div className="chat-bubble-label">
           {content.kind === "reject" ? "Request declined" : "Clarification needed"}
         </div>
-        <div>{content.message ?? content.question}</div>
+        <div>{content.text || content.question}</div>
       </div>
     );
   }
@@ -133,16 +171,21 @@ function ChatMessageBubble({ message }: { message: ChatMessage }) {
         data-kind="no_answer"
       >
         <div className="chat-bubble-label">No answer available</div>
-        <div>{content.message ?? "I couldn't find a way to answer that from the available data."}</div>
+        <div>{content.text || "I couldn't find a way to answer that from the available data."}</div>
       </div>
     );
   }
 
-  // "tier3" / "tier4" (or any future success kind carrying sql/rows).
+  // "tier3" / "tier4" (or any future success kind carrying sql/rows). `text`
+  // is the natural-language answer, growing token-by-token as it streams in
+  // -- rendered as a plain, ever-updating text block (simplest correct
+  // behavior first); the SQL/rows are already fully present in `metadata`
+  // from the first update, so those render immediately via the existing
+  // `<pre>`/`ResultTable` treatment.
   return (
     <div className="chat-bubble chat-bubble--assistant" data-kind={content.kind}>
       <div className="chat-bubble-label">Assistant &middot; {content.kind}</div>
-      {content.message && <p>{content.message}</p>}
+      {content.text && <p>{content.text}</p>}
       {content.sql && (
         <pre className="chat-sql">
           <code>{content.sql}</code>
@@ -152,4 +195,3 @@ function ChatMessageBubble({ message }: { message: ChatMessage }) {
     </div>
   );
 }
-
