@@ -1,6 +1,6 @@
 import { runGuardrails } from "../../src/lib/guardrails";
 import { tier4Fallback } from "../../src/lib/text2sql/tier4";
-import { generateTier3Sql } from "../../src/lib/text2sql/tier3";
+import { generateTier3Sql, type ConversationTurn } from "../../src/lib/text2sql/tier3";
 import { query } from "../../src/lib/db/client";
 
 export interface GoldCase {
@@ -447,16 +447,269 @@ async function assertUnanswerableGracefully(
 }
 
 /**
+ * Builds a synthetic `ConversationTurn[]` history representing ONE prior
+ * user/assistant exchange, in the exact shape `app/api/chat/route.ts`'s
+ * `recordTurn` actually persists for a Tier 3 SQL turn today: a `user` turn
+ * holding the raw question, and an `assistant` turn holding
+ * `` `Generated ${kind} SQL: ${sql}` `` (see `recordTurn`'s call
+ * `` recordTurn(sessionId, question, `Generated ${kind} SQL: ${sql}`); ``
+ * at the bottom of that route). Building it this way means these gold
+ * cases exercise `generateTier3Sql` against a history that looks like what
+ * the real app would actually store, not an idealized "assistant explained
+ * the answer in English" summary.
+ */
+function buildTier3History(priorQuestion: string, priorSql: string): ConversationTurn[] {
+  return [
+    { role: "user", text: priorQuestion },
+    { role: "assistant", text: `Generated tier3 SQL: ${priorSql}` },
+  ];
+}
+
+interface Tier3ExecutionOutcome {
+  kind: "sql" | "clarify" | "no_match";
+  sql?: string;
+  count?: number;
+  clarifyQuestion?: string;
+  error?: string;
+}
+
+/**
+ * Calls `generateTier3Sql(question, history)`, and — only when it returns
+ * `{kind: "sql"}` and the SQL passes the same `referencesRawTables` spot
+ * check the other tier3_* helpers use — executes it through the real
+ * `query()` helper and extracts the first row's first column as `count`.
+ * Never throws: a validation/raw-table problem or a SQL execution failure
+ * is reported back via `error` rather than crashing the caller, matching
+ * the try/catch robustness already established by
+ * `assertTier3QuantitativeMatches`/`assertTier3CohortIncludesNctId` above.
+ */
+async function runTier3AndExecute(
+  question: string,
+  history: ConversationTurn[],
+): Promise<Tier3ExecutionOutcome> {
+  const result = await generateTier3Sql(question, history);
+
+  if (result.kind === "clarify") {
+    return { kind: "clarify", clarifyQuestion: result.question };
+  }
+  if (result.kind === "no_match") {
+    return { kind: "no_match" };
+  }
+
+  if (referencesRawTables(result.sql)) {
+    return {
+      kind: "sql",
+      sql: result.sql,
+      error: `Generated SQL appears to reference a raw faers.*/ct.* table, not sem.*: ${result.sql}`,
+    };
+  }
+
+  try {
+    const rows = await query(result.sql);
+    if (rows.length === 0) {
+      return { kind: "sql", sql: result.sql, error: "Generated SQL returned zero rows." };
+    }
+    const firstRow = rows[0] as Record<string, unknown>;
+    const rawValue = Object.values(firstRow)[0];
+    return { kind: "sql", sql: result.sql, count: Number(rawValue) };
+  } catch (err) {
+    return {
+      kind: "sql",
+      sql: result.sql,
+      error: `Executing the generated SQL failed: ${(err as Error).message}`,
+    };
+  }
+}
+
+/**
+ * Shared assertion helper for `tier3_multiturn`'s drug-swap pattern: proves
+ * that passing prior conversation turns actually changes what an elliptical
+ * follow-up question resolves to, using a real "swap the drug" follow-up
+ * (e.g. "What about dupilumab instead?").
+ *
+ * Sequence:
+ *   1. Ask `baselineQuestion` with NO history; require `{kind: "sql"}` and
+ *      the executed count to match `baselineExpectedCount` exactly (a real,
+ *      pre-verified reference number — see each gold case's comment for the
+ *      live `psql` verification query/output).
+ *   2. Build a synthetic history from that exchange via `buildTier3History`
+ *      (matching `route.ts`'s real `recordTurn` format).
+ *   3. Ask `followupQuestion` WITH that history; require `{kind: "sql"}`
+ *      and the executed count to match `followupExpectedCount` exactly —
+ *      this is the real assertion: history-grounding must resolve the
+ *      elliptical follow-up to the swapped-in drug's own correct count,
+ *      not the baseline drug's count or a fabricated one.
+ *   4. As a contrast (not a hard pass/fail — the model's behavior with no
+ *      grounding at all is informational, not a promotion-blocking
+ *      requirement, since a "decline" and a "still land on the right
+ *      answer via a different reading" are both defensible with zero
+ *      context), ask the SAME `followupQuestion` with an EMPTY history and
+ *      report what happened in the returned `detail` string so a failure
+ *      (or a passing run) makes the with-vs-without-history contrast
+ *      legible to a human reading it, not just a bare pass/fail.
+ *
+ * Requires a live ANTHROPIC_API_KEY, same skip pattern as
+ * `assertTier3QuantitativeMatches`.
+ */
+async function assertTier3MultiturnDrugSwap(
+  baselineQuestion: string,
+  baselineExpectedCount: number,
+  followupQuestion: string,
+  followupExpectedCount: number,
+): Promise<{ pass: boolean; detail: string }> {
+  if (!hasLiveAnthropicCredentials()) {
+    return {
+      pass: true,
+      detail:
+        "Skipped: generateTier3Sql needs a live ANTHROPIC_API_KEY not configured in this environment. Re-run with real credentials to actually exercise it.",
+    };
+  }
+
+  const baseline = await runTier3AndExecute(baselineQuestion, []);
+  if (baseline.kind !== "sql" || baseline.error || baseline.count === undefined) {
+    return {
+      pass: false,
+      detail: `Baseline call (no history) for "${baselineQuestion}" failed to produce a usable count: kind="${baseline.kind}"${baseline.error ? `, error: ${baseline.error}` : ""}.`,
+    };
+  }
+  if (baseline.count !== baselineExpectedCount) {
+    return {
+      pass: false,
+      detail: `Baseline count mismatch for "${baselineQuestion}": expected ${baselineExpectedCount}, got ${baseline.count}. SQL: ${baseline.sql}`,
+    };
+  }
+
+  const history = buildTier3History(baselineQuestion, baseline.sql as string);
+
+  const withHistory = await runTier3AndExecute(followupQuestion, history);
+  if (withHistory.kind !== "sql" || withHistory.error || withHistory.count === undefined) {
+    return {
+      pass: false,
+      detail: `WITH history, follow-up "${followupQuestion}" (after baseline "${baselineQuestion}" -> ${baselineExpectedCount}) failed to resolve: kind="${withHistory.kind}"${withHistory.error ? `, error: ${withHistory.error}` : ""}.`,
+    };
+  }
+  if (withHistory.count !== followupExpectedCount) {
+    return {
+      pass: false,
+      detail: `WITH history, expected follow-up "${followupQuestion}" to resolve to ${followupExpectedCount} (grounded via baseline "${baselineQuestion}" -> ${baselineExpectedCount}), got ${withHistory.count}. SQL: ${withHistory.sql}`,
+    };
+  }
+
+  const withoutHistory = await runTier3AndExecute(followupQuestion, []);
+  const withoutHistorySummary =
+    withoutHistory.kind !== "sql"
+      ? `kind="${withoutHistory.kind}" -- declined, consistent with having no antecedent for "${followupQuestion}" without history`
+      : withoutHistory.error
+        ? `kind="sql" but failed to execute/validate: ${withoutHistory.error}`
+        : `kind="sql", executed count=${withoutHistory.count} (SQL: ${withoutHistory.sql})`;
+
+  return {
+    pass: true,
+    detail: `WITH history: baseline "${baselineQuestion}" -> ${baselineExpectedCount}, then follow-up "${followupQuestion}" -> ${followupExpectedCount} as expected (history-grounding changed how the elliptical follow-up resolved). CONTRAST -- same follow-up "${followupQuestion}" with EMPTY history: ${withoutHistorySummary}.`,
+  };
+}
+
+/**
+ * Shared assertion helper for `tier3_multiturn`'s "narrow the prior scope"
+ * pattern: proves that an elliptical follow-up like "And how many of those
+ * were serious?" — which names no drug at all — resolves, WITH history, to
+ * a real subset of the prior question's own result, and is expected to
+ * behave differently with no grounding at all.
+ *
+ * Sequence mirrors `assertTier3MultiturnDrugSwap` above (baseline with no
+ * history -> build synthetic history -> follow-up WITH that history), but
+ * the follow-up assertion is a bounds check rather than an exact match:
+ * "serious reports mentioning drug X" must be a real, non-fabricated,
+ * non-negative subset of "reports mentioning drug X" — i.e.
+ * `0 <= followupCount <= baselineExpectedCount` — since the model's exact
+ * SQL phrasing of "serious" may vary while still being correct (see
+ * `RELATIONSHIP_NOTES` in `tier3.ts` on the seriousness columns), matching
+ * this suite's existing precision-over-exact-shape style (see
+ * `assertTier3CohortIncludesNctId` above). The same EMPTY-history contrast
+ * call is made afterward and folded into the `detail` string rather than
+ * the pass/fail verdict, for the same reason documented above.
+ *
+ * This follow-up shape is a stronger contrast than the drug-swap helper's:
+ * it contains no drug name at all, so an empty-history call has no
+ * antecedent whatsoever for "those" -- a `clarify`/`no_match`, or a `sql`
+ * result whose count is NOT a subset of `baselineExpectedCount` (e.g. it
+ * lands on the dataset-wide serious-report count instead), are both
+ * legible evidence that the ungrounded call read "those" differently than
+ * the history-grounded call did.
+ *
+ * Requires a live ANTHROPIC_API_KEY, same skip pattern as
+ * `assertTier3QuantitativeMatches`.
+ */
+async function assertTier3MultiturnSeriousFollowup(
+  baselineQuestion: string,
+  baselineExpectedCount: number,
+  followupQuestion: string,
+): Promise<{ pass: boolean; detail: string }> {
+  if (!hasLiveAnthropicCredentials()) {
+    return {
+      pass: true,
+      detail:
+        "Skipped: generateTier3Sql needs a live ANTHROPIC_API_KEY not configured in this environment. Re-run with real credentials to actually exercise it.",
+    };
+  }
+
+  const baseline = await runTier3AndExecute(baselineQuestion, []);
+  if (baseline.kind !== "sql" || baseline.error || baseline.count === undefined) {
+    return {
+      pass: false,
+      detail: `Baseline call (no history) for "${baselineQuestion}" failed to produce a usable count: kind="${baseline.kind}"${baseline.error ? `, error: ${baseline.error}` : ""}.`,
+    };
+  }
+  if (baseline.count !== baselineExpectedCount) {
+    return {
+      pass: false,
+      detail: `Baseline count mismatch for "${baselineQuestion}": expected ${baselineExpectedCount}, got ${baseline.count}. SQL: ${baseline.sql}`,
+    };
+  }
+
+  const history = buildTier3History(baselineQuestion, baseline.sql as string);
+
+  const withHistory = await runTier3AndExecute(followupQuestion, history);
+  if (withHistory.kind !== "sql" || withHistory.error || withHistory.count === undefined) {
+    return {
+      pass: false,
+      detail: `WITH history, follow-up "${followupQuestion}" (after baseline "${baselineQuestion}" -> ${baselineExpectedCount}) failed to resolve: kind="${withHistory.kind}"${withHistory.error ? `, error: ${withHistory.error}` : ""}.`,
+    };
+  }
+  if (
+    !Number.isFinite(withHistory.count) ||
+    withHistory.count < 0 ||
+    withHistory.count > baselineExpectedCount
+  ) {
+    return {
+      pass: false,
+      detail: `WITH history, expected a real subset (0..${baselineExpectedCount}) of baseline "${baselineQuestion}" for follow-up "${followupQuestion}", got ${withHistory.count} which is not a valid subset -- looks fabricated or ungrounded. SQL: ${withHistory.sql}`,
+    };
+  }
+
+  const withoutHistory = await runTier3AndExecute(followupQuestion, []);
+  const withoutHistorySummary =
+    withoutHistory.kind !== "sql"
+      ? `kind="${withoutHistory.kind}" -- declined, consistent with "${followupQuestion}" having no antecedent at all without history`
+      : withoutHistory.error
+        ? `kind="sql" but failed to execute/validate: ${withoutHistory.error}`
+        : withoutHistory.count !== undefined && withoutHistory.count > baselineExpectedCount
+          ? `kind="sql", executed count=${withoutHistory.count} -- exceeds the ${baselineExpectedCount}-report baseline, so it plainly did NOT narrow to "${baselineQuestion}"'s scope (SQL: ${withoutHistory.sql})`
+          : `kind="sql", executed count=${withoutHistory.count} (SQL: ${withoutHistory.sql})`;
+
+  return {
+    pass: true,
+    detail: `WITH history: baseline "${baselineQuestion}" -> ${baselineExpectedCount}, then follow-up "${followupQuestion}" -> ${withHistory.count} (a real subset of the baseline, as expected -- history-grounding narrowed the elliptical follow-up to the prior drug's scope). CONTRAST -- same follow-up "${followupQuestion}" with EMPTY history: ${withoutHistorySummary}.`,
+  };
+}
+
+/**
  * Gold-case suite.
  *
  * Populated so far: guardrail_offtopic, guardrail_inappropriate,
  * guardrail_injection, ambiguous_clarify, hallucination_resistance,
- * tier4_longtail, tier3_quantitative, tier3_cohort, and unanswerable.
- *
- * NOT yet populated (needs multi-turn conversation-history plumbing that a
- * concurrent track is still landing — deliberately left as a documented
- * follow-up rather than fabricated):
- * - tier3_multiturn
+ * tier4_longtail, tier3_quantitative, tier3_cohort, unanswerable, and
+ * tier3_multiturn.
  *
  * Each populated category has exactly one `split: "test"` case (the most
  * canonical/settled example) and the rest `split: "train"`.
@@ -788,5 +1041,77 @@ export const goldCases: GoldCase[] = [
     requiresAnthropic: true,
     assert: () =>
       assertUnanswerableGracefully("How many adverse event reports mention chloramphenicol?"),
+  },
+
+  // ── tier3_multiturn (Layer 3 LLM required — see requiresAnthropic doc
+  //    above; every reference count re-verified live against the loaded
+  //    dataset via `docker exec pharmasentinel-postgres psql ...`, same as
+  //    tier3_quantitative above). Each case builds a synthetic
+  //    ConversationTurn[] history matching the exact shape
+  //    `app/api/chat/route.ts`'s `recordTurn` actually persists (see
+  //    `buildTier3History` above), then checks whether passing that
+  //    history changes what a genuinely elliptical follow-up question
+  //    resolves to compared to asking the same follow-up with empty
+  //    history — the real thing worth testing here, not just "does history
+  //    exist". ────────────────────────────────────────────────────────────
+  {
+    // Baseline verified: `SELECT count(*) FROM sem.faers_case_summary
+    // WHERE EXISTS (SELECT 1 FROM unnest(primary_suspect_ingredients) i
+    // WHERE i ILIKE 'rituximab');` => 62.
+    // Follow-up names no drug at all ("those"), so it has zero antecedent
+    // without the prior turn -- this is the strongest with-vs-without-
+    // history contrast in this category (see
+    // assertTier3MultiturnSeriousFollowup's doc comment above).
+    id: "tier3_multiturn_serious_followup_rituximab",
+    category: "tier3_multiturn",
+    question: "And how many of those were serious?",
+    split: "test",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3MultiturnSeriousFollowup(
+        "How many adverse event reports mention rituximab?",
+        62,
+        "And how many of those were serious?",
+      ),
+  },
+  {
+    // Baseline verified: `SELECT count(*) FROM sem.faers_case_summary
+    // WHERE EXISTS (SELECT 1 FROM unnest(primary_suspect_ingredients) i
+    // WHERE i ILIKE 'dupilumab');` => 70.
+    // The follow-up swaps the drug entirely ("instead") -- history must
+    // carry the "we were counting adverse event reports" framing so the
+    // follow-up resolves to a rituximab-shaped question about dupilumab,
+    // not something else.
+    id: "tier3_multiturn_drug_swap_dupilumab",
+    category: "tier3_multiturn",
+    question: "What about dupilumab instead?",
+    split: "train",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3MultiturnDrugSwap(
+        "How many adverse event reports mention rituximab?",
+        62,
+        "What about dupilumab instead?",
+        70,
+      ),
+  },
+  {
+    // Baseline verified: `SELECT count(*) FROM sem.faers_case_summary
+    // WHERE EXISTS (SELECT 1 FROM unnest(primary_suspect_ingredients) i
+    // WHERE i ILIKE 'dupilumab');` => 70. Same "narrow the prior scope"
+    // follow-up as the test case above, but against a different base drug
+    // -- covers the pattern with a second, independent baseline rather
+    // than only ever exercising it against rituximab.
+    id: "tier3_multiturn_serious_followup_dupilumab",
+    category: "tier3_multiturn",
+    question: "And how many of those were serious?",
+    split: "train",
+    requiresAnthropic: true,
+    assert: () =>
+      assertTier3MultiturnSeriousFollowup(
+        "How many adverse event reports mention dupilumab?",
+        70,
+        "And how many of those were serious?",
+      ),
   },
 ];
