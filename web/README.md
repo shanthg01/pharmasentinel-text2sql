@@ -72,21 +72,40 @@ npm run eval:gate    # runs scripts/eval-gate.ts -- hard-fails if any
   DAG (`schemaGraph.ts`, built from the real `ont.*`/`sem.*` DDL) with
   the query's actual referenced tables highlighted.
 - `src/app/evaluation/` — live dashboard over `scripts/eval/goldCases.ts`
-  (18 cases across `guardrail_offtopic`/`inappropriate`/`injection`,
-  `ambiguous_clarify`, `hallucination_resistance`, `tier4_longtail`),
-  category/split pass-rate table, promotion-gate status.
+  (28 cases across `guardrail_offtopic`/`inappropriate`/`injection`,
+  `ambiguous_clarify`, `hallucination_resistance`, `tier4_longtail`,
+  `tier3_quantitative`, `tier3_cohort`, `unanswerable`, and
+  `tier3_multiturn`), category/split pass-rate table, promotion-gate
+  status.
+- Streaming: `route.ts` supports an opt-in `stream: true` request field
+  (Chat tab only — Cohort/Auditor/Evaluation omit it and get byte-for-byte
+  the same JSON response as before). When set, the NL answer
+  (`src/lib/render/renderAnswer.ts`, a real `messages.stream()` call)
+  streams token-by-token; the SQL/rows are still available immediately
+  via a leading metadata line — see the wire-format comment at the top of
+  `route.ts`/`apiClient.ts`.
+- Multi-turn follow-ups: `tier3_multiturn` gold cases verify that an
+  elliptical follow-up ("What about dupilumab instead?") resolves
+  correctly grounded in the session's real prior history, and — as the
+  actual contrast that makes the test meaningful — declines gracefully
+  rather than guessing when asked with no history at all.
+- `db/setup.sh` — one-command bootstrap (start Postgres, apply all 7 DDL
+  files, load seed CSVs, verify), collapsing the manual steps in
+  `db/README.md` into a single script.
 
 **Remaining gaps (documented, not silently missing):**
 
-- Gold-case suite covers 18 of a planned 30+ cases. `tier3_quantitative`,
-  `tier3_cohort`, `tier3_multiturn`, and `unanswerable` need real
-  reference numbers from a larger FAERS/ClinicalTrials.gov load than the
-  small verification slice this repo has loaded so far — deliberately
-  left as a follow-up rather than fabricated.
-- Streaming: `route.ts` returns a single JSON response, not a token
-  stream.
+- Gold-case suite covers 28 of a planned 30+ cases. Every populated
+  category is real and live-verified; growing past 30 mainly needs a
+  bigger FAERS/ClinicalTrials.gov load than the small verification slice
+  this repo has loaded so far, to widen coverage rather than add depth
+  to categories already well-covered.
 - Verified-query cache (`verifiedQueries.ts`) is exact-match only, no
   fuzzy/embedding similarity yet.
+- `renderAnswer.ts` caps the rows sent to the model at 20 (with an
+  explicit truncation note) — a cohort question returning hundreds of
+  rows gets an NL summary grounded on a sample, not the full result set;
+  the full result set is still shown in the table regardless.
 
 ## Notes worth knowing about
 
