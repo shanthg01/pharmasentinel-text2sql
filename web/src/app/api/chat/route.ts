@@ -68,12 +68,47 @@ function streamResponse(
   textChunks: AsyncGenerator<string>,
 ): Response {
   const encoder = new TextEncoder();
+  // A client disconnecting mid-stream (closed tab, navigated away, or any
+  // fetch/curl that hits its own timeout before a slow LLM call finishes --
+  // real, observed cases here took 30-40s+) closes this ReadableStream's
+  // controller out from under us. Every controller call below is
+  // individually try/caught for exactly that reason: an *uncaught* throw
+  // from inside `finally { controller.close() }` -- i.e. calling close() a
+  // second time on an already-closed controller -- propagates out of this
+  // `start()` callback and, unlike a normal request handler's exception,
+  // does not stay scoped to one request. Confirmed live: it took the whole
+  // dev server down (every subsequent request hung) until restarted. `let`
+  // + a boolean guard, rather than relying on `controller.desiredSize`
+  // (which the DOM/undici types don't consistently narrow to `null` the
+  // same way across runtimes), keeps this simple and unconditionally safe.
+  let closed = false;
+  function safeEnqueue(chunk: Uint8Array, controller: ReadableStreamDefaultController<Uint8Array>): void {
+    if (closed) return;
+    try {
+      controller.enqueue(chunk);
+    } catch (err) {
+      closed = true;
+      console.error("Error while streaming chat answer (enqueue after close):", err);
+    }
+  }
+  function safeClose(controller: ReadableStreamDefaultController<Uint8Array>): void {
+    if (closed) return;
+    closed = true;
+    try {
+      controller.close();
+    } catch (err) {
+      console.error("Error while streaming chat answer (close):", err);
+    }
+  }
+
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
-      controller.enqueue(encoder.encode(`${JSON.stringify(metadata)}\n`));
+      safeEnqueue(encoder.encode(`${JSON.stringify(metadata)}\n`), controller);
       try {
         for await (const chunk of textChunks) {
-          controller.enqueue(encoder.encode(chunk));
+          if (closed) break; // stop pulling from the (possibly expensive,
+          // still-running) LLM stream once nobody can receive it anymore.
+          safeEnqueue(encoder.encode(chunk), controller);
         }
       } catch (err) {
         // The metadata (and any partial text already enqueued) has already
@@ -81,8 +116,16 @@ function streamResponse(
         // ReadableStream controller callback.
         console.error("Error while streaming chat answer:", err);
       } finally {
-        controller.close();
+        safeClose(controller);
       }
+    },
+    cancel(reason) {
+      // Fires when the client disconnects (tab closed, request aborted).
+      // Mark closed so the in-flight for-await loop above stops enqueueing
+      // (and exits at its next iteration) instead of doing pointless work
+      // against a controller nobody's reading from anymore.
+      closed = true;
+      console.error("Chat stream cancelled by client:", reason);
     },
   });
   return new Response(body, {
