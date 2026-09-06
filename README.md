@@ -50,6 +50,12 @@ small curated PT subset), and data-quality rationale.
 
 ```bash
 # 1. Database
+#
+# One command (starts Postgres, applies all DDL, loads seed CSVs, verifies):
+#   bash db/setup.sh
+#
+# ...or the manual steps it automates, if you'd rather see what's happening
+# (or aren't running bash):
 cp db/.env.example db/.env   # edit password
 docker compose -f db/docker-compose.yml --env-file db/.env up -d
 # apply db/ddl/000_schemas.sql .. 006_field_search.sql in order (psql or
