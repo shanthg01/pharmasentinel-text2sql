@@ -83,6 +83,18 @@ Relationships between these views (do not invent any other join path):
   lower-cased by the view itself -- safe to compare with a plain
   lower-cased literal there, but that guarantee does not extend to the
   two raw columns above.
+- sem.trials_summary/sem.trials_outcomes' phase column stores raw
+  ClinicalTrials.gov v2 API phase codes verbatim, NOT the human phrasing
+  a question is likely to use. Real observed values in this data include
+  'PHASE1', 'PHASE2', 'PHASE3', 'PHASE4', 'EARLY_PHASE1', 'NA', an empty
+  string, AND comma-joined combinations for studies spanning more than
+  one phase (e.g. 'PHASE1, PHASE2'). A plain equality match against a
+  human-phrased value like 'Phase 1' will match NOTHING -- neither the
+  case/format nor the comma-joined multi-phase rows. For a question
+  about "Phase 1" (or "Phase 2/3", etc.) trials, always match with
+  'phase ILIKE '%PHASE1%'' (substring, case-insensitive) rather than a
+  bare '=', so both the plain single-phase rows and the comma-joined
+  multi-phase rows that include it are correctly included.
 `.trim();
 
 let cachedClient: Anthropic | null = null;
